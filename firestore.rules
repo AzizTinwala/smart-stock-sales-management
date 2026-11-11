@@ -1,0 +1,83 @@
+rules_version = '2';
+service.cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function getUserRole() {
+      return getUserData().role;
+    }
+
+    function getUserCompanyId() {
+      return getUserData().companyId;
+    }
+
+    function isSuperUser() {
+      return isAuthenticated() && getUserRole() == "SUPER_USER";
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && getUserRole() == "ADMIN";
+    }
+
+    function isUser() {
+      return isAuthenticated() && getUserRole() == "USER";
+    }
+
+    function isViewer() {
+      return isAuthenticated() && getUserRole() == "VIEWER";
+    }
+
+    function belongsToCompany(companyId) {
+      return isSuperUser() || (getUserCompanyId() == companyId);
+    }
+
+    // Users Collection
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (
+        request.auth.uid == userId ||
+        isSuperUser() ||
+        (isAdmin() && getUserCompanyId() == resource.data.companyId)
+      );
+
+      allow create: if isAuthenticated() && (
+        request.auth.uid == userId ||
+        isSuperUser() ||
+        (isAdmin() && getUserCompanyId() == request.resource.data.companyId && request.resource.data.role != "SUPER_USER")
+      );
+
+      allow update: if isAuthenticated() && (
+        (request.auth.uid == userId && request.resource.data.role == resource.data.role) ||
+        isSuperUser() ||
+        (isAdmin() && getUserCompanyId() == resource.data.companyId && resource.data.role != "SUPER_USER" && request.resource.data.role != "SUPER_USER")
+      );
+
+      allow delete: if isSuperUser();
+    }
+
+    // Companies & Tenant Data Isolation
+    match /companies/{companyId} {
+      allow read: if isAuthenticated() && belongsToCompany(companyId);
+      allow write: if isSuperUser();
+
+      match /locations/{locationId}/{document=**} {
+        allow read: if isAuthenticated() && belongsToCompany(companyId);
+        allow create, update: if isAuthenticated() && belongsToCompany(companyId) && (isSuperUser() || isAdmin() || isUser());
+        allow delete: if isAuthenticated() && belongsToCompany(companyId) && (isSuperUser() || isAdmin());
+      }
+    }
+
+    // Audit Logs
+    match /audit_logs/{logId} {
+      allow read: if isAuthenticated() && (isSuperUser() || (isAdmin() && resource.data.companyId == getUserCompanyId()));
+      allow create: if isAuthenticated();
+      allow update, delete: if isSuperUser();
+    }
+  }
+}
